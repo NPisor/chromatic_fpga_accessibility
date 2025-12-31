@@ -33,6 +33,7 @@ module gb (
     input [63:0] paletteBGIn,
     input [63:0] paletteOBJ0In,
     input [63:0] paletteOBJ1In,
+    input [2:0]  gbc_color_temp,
     output gbc_mode,
     output [63:0] gpd,
 
@@ -185,7 +186,9 @@ wire sel_zpram = (cpu_addr[15:7] == 9'b111111111) && // 127 bytes zero pageram a
 wire sel_audio = (cpu_addr[15:8] == 8'hff) &&        // audio reg ff10 - ff3f and ff76/ff77 PCM12/PCM34 (undocumented registers)
                     ((cpu_addr[7:5] == 3'b001) || (cpu_addr[7:4] == 4'b0001) || (cpu_addr[7:0] == 8'h76) || (cpu_addr[7:0] == 8'h77));
 
-wire sel_ext_bus = sel_rom | sel_cram | sel_wram;
+// While the guard is active keep the cart/WRAM bus hidden so the CPU must fetch
+// from the boot ROM. After the guard expires, normal bus decode resumes.
+wire sel_ext_bus = boot_guard_active ? 1'b0 : (sel_rom | sel_cram | sel_wram);
 
 wire sel_boot_rom, sel_boot_rom_cgb;
 
@@ -336,7 +339,8 @@ wire [7:0] cpu_di =
         sel_FF73?FF73: // unused register, all bits read/write
         sel_FF74?FF74: // unused register, all bits read/write, only in CGB mode
         sel_FF75?{1'b1,FF75, 4'b1111}: // unused register, bits 4-6 read/write
-        sel_FF50?{6'b0, fast_boot_en, boot_gba_en}: // MiSTer special instruction register 
+        // Hard-disable fast boot so the boot logo path always runs.
+            sel_FF50?{6'b0, 1'b0, boot_gba_en}: // MiSTer special instruction register 
         8'hff;
 
 wire cpu_wr_n;
@@ -782,6 +786,7 @@ video video (
     .paletteBGIn      ( paletteBGIn ),
     .paletteOBJ0In     ( paletteOBJ0In ),
     .paletteOBJ1In     ( paletteOBJ1In ),
+    .gbc_color_temp   ( gbc_color_temp ),
     .gpd_out         ( gpd     ),
 
     .irq         ( video_irq     ),
@@ -1034,14 +1039,21 @@ end
 
 assign SS_Top_BACK[23] = boot_rom_enabled;
 
+// Guard window after reset to force boot ROM visible, then allow FF50 to disable.
+reg [7:0] boot_guard_cnt = 8'd0; // ~256 cycles of guard
+wire boot_guard_active = ~boot_guard_cnt[7];
+
 always @(posedge clk_sys) begin
-    if(reset_ss)
-        boot_rom_enabled <= SS_Top[23]; // 1'b1;
-    else if (ce) begin 
-        if((cpu_addr == 16'hff50) && !cpu_wr_n_edge)
-        begin
-          if ((isGBC && cpu_do[7:0]==8'h11) || (!isGBC && cpu_do[0]))
-                  boot_rom_enabled <= 1'b0;
+    if (reset_ss) begin
+        boot_rom_enabled <= 1'b1;
+        boot_guard_cnt   <= 8'd0;
+    end else if (ce) begin
+        if (boot_guard_active)
+            boot_guard_cnt <= boot_guard_cnt + 1'b1;
+
+        if (!boot_guard_active && (cpu_addr == 16'hff50) && !cpu_wr_n_edge) begin
+            if ((isGBC && cpu_do[7:0]==8'h11) || (!isGBC && cpu_do[0]))
+                boot_rom_enabled <= 1'b0;
         end
     end
 end
@@ -1054,7 +1066,9 @@ wire [15:0] boot_rom_addr = (isGBC && hdma_rd) ? hdma_source_addr : cpu_addr;
 //100-1FF Cart Header
 //200-8FF bootrom 2nd part
 assign sel_boot_rom_cgb = isGBC && (boot_rom_addr[15:8] >= 8'h02 && boot_rom_addr[15:8] <= 8'h08);
-assign sel_boot_rom = boot_rom_enabled && (!boot_rom_addr[15:8] || sel_boot_rom_cgb) && ~megaduck;
+// Allow boot ROM even when megaduck is enabled so the logo path can't be skipped by that mode.
+// Force boot ROM visible during the guard window regardless of boot_rom_enabled.
+assign sel_boot_rom = (boot_guard_active || boot_rom_enabled) && (!boot_rom_addr[15:8] || sel_boot_rom_cgb);
 
 
 // $000-8FF: GBC
@@ -1071,7 +1085,7 @@ wire [10:0] boot_wr_addr =
 
 wire [7:0] boot_q;
 
-dpram_difV #(12,8,11,16,"BootROMs/cgb_boot.hex") boot_rom (
+dpram_difV #(12,8,11,16,"BootROMs/cgb_boot.mif.vmem") boot_rom (
     .clock (clk_sys),
 
     .address_a (boot_addr),

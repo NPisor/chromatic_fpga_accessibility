@@ -9,7 +9,8 @@
 
 parameter ADDR_WIDTH   = 16; // Not more than 32
 parameter DATA_WIDTH   = 8;  // Not more than 32
-parameter MAX_CODES    = 32;
+// Limit to 8 entries to match UI slots and save resources on the target device
+parameter MAX_CODES    = 8;
 
 module CODES(
 	input  clk,        // Best to not make it too high speed for timing reasons
@@ -38,6 +39,7 @@ wire [ADDR_WIDTH-1: 0] code_addr    = code[64+:ADDR_WIDTH];
 wire [DATA_WIDTH-1: 0] code_compare = code[32+:DATA_WIDTH];
 wire [DATA_WIDTH-1: 0] code_data    = code[0+:DATA_WIDTH];
 wire code_comp_f = code[96];
+wire code_enable = code[97];
 
 wire [COMP_F_S:0] code_trimmed = {code_comp_f, code_addr, code_compare, code_data};
 
@@ -62,8 +64,6 @@ always_comb begin
 	end
 end
 
-assign available = |next_index;
-
 reg code_change;
 always_ff @(posedge clk) begin
 	int x;
@@ -75,7 +75,7 @@ always_ff @(posedge clk) begin
 		code_change <= code[128];
 		if (code[128] && ~code_change && (found_dup || next_index < MAX_CODES)) begin // detect posedge
 			// replace it enabled if it has the same address, otherwise, add a new code
-			codes[index] <= {1'b1, code_trimmed};
+			codes[index] <= {code_enable, code_trimmed};
 			if (~found_dup) next_index <= next_index + 1'b1;
 		end
 	end
@@ -97,5 +97,17 @@ always_comb begin
 		end
 	end
 end
+
+// Report whether at least one cheat is enabled
+logic any_enabled;
+always_comb begin
+	int i;
+	any_enabled = 1'b0;
+	for (i = 0; i < MAX_CODES; i = i + 1) begin
+		if (codes[i][ENA_F_S]) any_enabled = 1'b1;
+	end
+end
+
+assign available = any_enabled;
 
 endmodule

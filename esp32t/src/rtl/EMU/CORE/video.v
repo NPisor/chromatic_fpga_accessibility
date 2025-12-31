@@ -30,11 +30,12 @@ module video (
 
 	input  boot_rom_en,
 
-   input customPaletteEna,
-   input [63:0] paletteBGIn,
-   input [63:0] paletteOBJ0In,
-   input [63:0] paletteOBJ1In,
-   output [63:0] gpd_out,
+	input  customPaletteEna,
+	input  [63:0] paletteBGIn,
+	input  [63:0] paletteOBJ0In,
+	input  [63:0] paletteOBJ1In,
+	input 	[2:0]  gbc_color_temp,
+	output [63:0] gpd_out,
 
 	// cpu register adn oam interface
 	input  cpu_sel_oam,
@@ -1071,8 +1072,7 @@ wire [1:0] obp_data =   (sprite_pixel_data == 2'b00) ? obp[1:0] :
 													obp[7:6];
 
 wire [5:0] palette_index = isGBC_mode ? {bg_tile_attr[2:0], bg_pix_data, 1'b0} :  //GBC game
-									{3'd0, bgp_data , 1'b0}; //GB game in GBC mode
-
+						{3'd0, bgp_data , 1'b0}; //GB game in GBC mode
 
 wire [7:0] paletteCustomBG [7:0];
 assign paletteCustomBG[0] = paletteBGIn[ 7: 0];
@@ -1111,9 +1111,9 @@ wire [14:0] pix_rgb_data = (customPaletteEna && ~isGBC_mode) ? {paletteCustomBG[
                                                                 gbc_paletteBG;
 
 // apply sprite palette
-wire [2:0] spr_cgb_pal_out = {spr_cgb_pal_shift[2][7], spr_cgb_pal_shift[1][7], spr_cgb_pal_shift[0][7]};
-wire [5:0] sprite_palette_index = isGBC_mode ? {spr_cgb_pal_out, sprite_pixel_data, 1'b0 } : //gbc game
-                                               {sprite_pixel_cmap, obp_data, 1'b0}; //GB game in GBC mode
+wire [2:0] spr_cgb_pal_out = {spr_cgb_pal_shift[2][7], spr_cgb_pal_shift[1][7],spr_cgb_pal_shift[0][7]};
+wire [5:0] sprite_palette_index = isGBC_mode? {spr_cgb_pal_out, sprite_pixel_data, 1'b0 } : //gbc game
+						{sprite_pixel_cmap, obp_data, 1'b0}; //GB game in GBC mode
 
 wire [14:0] gbc_paletteSprite = isGBC ? {obpd[sprite_palette_index+1][6:0], obpd[sprite_palette_index]} : // gbc
                                         {13'd0, obp_data};
@@ -1122,6 +1122,52 @@ wire [14:0] sprite_pix = (customPaletteEna && ~isGBC_mode) ? {paletteCustomOBJ[s
 
 assign lcd_clk = mode3 && ~skip_en && ~sprite_fetch_hold && ~bg_shift_empty && (pcnt >= 8);
 
+wire [14:0] lcd_rgb_raw = (sprite_pixel_visible) ? sprite_pix : pix_rgb_data;
+
+// Signed delta biased toward red when positive and blue when negative.
+reg signed [4:0] color_temp_delta; // widen to allow stronger warmth steps
+always @(*) begin
+	case (gbc_color_temp)
+		3'd0: color_temp_delta = 0;   // neutral
+		3'd1: color_temp_delta = 2;   // warm 1
+		3'd2: color_temp_delta = 4;   // warm 2
+		3'd3: color_temp_delta = 6;   // warm 3
+		3'd4: color_temp_delta = 8;   // warm 4
+		default: color_temp_delta = 10; // warm 5 (max)
+	endcase
+end
+
+function [4:0] clamp5;
+	input signed [6:0] val;
+	begin
+		if (val < 0)
+			clamp5 = 5'd0;
+		else if (val > 31)
+			clamp5 = 5'd31;
+		else
+			clamp5 = val[4:0];
+	end
+endfunction
+
+wire apply_color_temp = isGBC_mode;
+wire [4:0] rgb_r = lcd_rgb_raw[4:0];
+wire [4:0] rgb_g = lcd_rgb_raw[9:5];
+wire [4:0] rgb_b = lcd_rgb_raw[14:10];
+
+// Only warm near-white pixels: sum thresholds gate the delta to keep mid/dark colors unchanged.
+wire [6:0] brightness_sum = {2'b0, rgb_r} + {2'b0, rgb_g} + {2'b0, rgb_b};
+wire signed [6:0] color_temp_delta_ext = color_temp_delta;
+wire signed [6:0] gated_delta =
+	(brightness_sum >= 7'd78) ? color_temp_delta_ext : // ~>= 26 avg
+	(brightness_sum >= 7'd66) ? (color_temp_delta_ext >>> 1) : // ~>= 22 avg
+	7'sd0;
+
+wire signed [6:0] red_temp   = {2'b0, rgb_r} + gated_delta;
+wire signed [6:0] green_temp = {2'b0, rgb_g} + (gated_delta >>> 1);
+wire signed [6:0] blue_temp  = {2'b0, rgb_b} - gated_delta;
+
+wire [14:0] lcd_rgb_temp = apply_color_temp ? {clamp5(blue_temp), clamp5(green_temp), clamp5(red_temp)} : lcd_rgb_raw;
+
 reg [14:0] lcd_data_out;
 reg  [1:0] lcd_data_gb_out;
 reg lcd_clk_out;
@@ -1129,7 +1175,7 @@ always @(posedge clk) begin
 	if (ce) begin
 		lcd_clk_out <= lcd_clk;
 		if (lcd_clk) begin
-			lcd_data_out <= (sprite_pixel_visible) ? sprite_pix : pix_rgb_data;
+			lcd_data_out <= lcd_rgb_temp;
 			lcd_data_gb_out <= (sprite_pixel_visible) ? obp_data : bgp_data;
 		end
 

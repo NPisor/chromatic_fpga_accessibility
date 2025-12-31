@@ -22,10 +22,10 @@ module cart
 
     output  reg [15:0]  CART_A,
     output              CART_CLK,
-    output  reg         CART_CS = 1'd1,
+    output  reg         CART_CS,
     inout   [7:0]       CART_D,
     output  reg         CART_RD,
-    output  reg         CART_WR = 1'd1,
+    output  reg         CART_WR,
     output              CART_DATA_DIR_E,
     output  reg [7:0]   CART_DIN_r1
 );

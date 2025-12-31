@@ -12,7 +12,7 @@ module system_monitor_arbiter
     input                            write_done,
     output                           uartDisabled,
     output      [$clog2(NUM_CH)-1:0] tx_channel,
-    output  reg [6:0]                tx_address = 'd0,
+    output  reg [6:0]                tx_address,
     output  reg                      write
 );
 
@@ -49,6 +49,7 @@ module system_monitor_arbiter
         if(reset)
         begin
             active_channel <= 'd0;
+            tx_address     <= 'd0;
             write          <= 'd0;
             write_active   <= 'd0;
             arbiter_active <= 'd0;

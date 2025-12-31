@@ -7,6 +7,7 @@ module uart_packet_wrapper_rx(
     input               uartDisabled,
     output  reg [6:0]   rx_address,
     output  reg [79:0]  rx_data,
+    output  reg [7:0]   rx_payload_len,
     output  reg         rx_data_val
 );
 
@@ -24,6 +25,7 @@ module uart_packet_wrapper_rx(
     begin
         if(reset) begin
             rx_state <= RX_IDLE;
+            rx_payload_len <= 8'd0;
         end else begin
         
             rx_data_val <=  1'd0;
@@ -44,6 +46,7 @@ module uart_packet_wrapper_rx(
                      if(uart_rx_val) begin
                          rx_state <= RX_DATA;
                          rx_count <= uart_rx_data;
+                         rx_payload_len <= uart_rx_data;
                      end
                      
                   RX_DATA   :

@@ -46,7 +46,9 @@ module UART2
     wire       div_cmpl;
     wire  [1:0] div_correct = 'd3;
 
-    wire [23:0] divider_value = 'd72;// = CLK_FREQ/(15*BAUD_RATE);
+    // Divider for baud generation: BAUD ~= CLK_FREQ / divider_value
+    // With gClk=8.388608 MHz and divider 72 we get ~116 kbps, matching 115200 baud.
+    wire [23:0] divider_value = 24'd72;
     // -------------------------------------------------------------------------
     // UART DIVIDER VALUE
     // -------------------------------------------------------------------------

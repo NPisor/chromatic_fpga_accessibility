@@ -4,16 +4,18 @@ module emu_system_top
 (
     input               hclk,
     input               pclk,
+    input               gclk,
     input               reset_n,
     input               POWER_GOOD,
     
     input               customPaletteEna,
-    input [63:0]        paletteBGIn,
-    input [63:0]        paletteOBJ0In,
-    input [63:0]        paletteOBJ1In,
+    input       [63:0]  paletteBGIn,
+    input       [63:0]  paletteOBJ0In,
+    input       [63:0]  paletteOBJ1In,
     input               paletteOff,
+    input       [2:0]   gbc_color_temp,
     output              gbc_mode,
-    output [63:0]       gpd,
+    output      [63:0]  gpd,
     
     input               BTN_NODIAGONAL,
     input               BTN_A,
@@ -48,6 +50,23 @@ module emu_system_top
 
     output lcd_on_int,
     output lcd_off_overwrite,
+
+    input               gg_reset,
+    input               gg_en,
+    input  [128:0]      gg_code,
+
+    // Peek/poke interface from system_monitor (gClk domain)
+    input               peek_req,
+    input               peek_we,
+    input  [15:0]       peek_addr,
+    input  [7:0]        peek_wdata,
+    output              peek_busy,
+    output              peek_data_valid,
+    output [7:0]        peek_data,
+    output [1:0]        peek_status,
+
+    output reg [31:0]   game_hash,
+    output reg          game_hash_valid,
     
     input               LCD_INIT_DONE,
     output              gb_lcd_clkena,
@@ -210,6 +229,95 @@ module emu_system_top
     
     wire DMA_on;
     wire hdma_active;
+
+    // Synchronize cheat control from system_monitor (gClk) into hclk domain
+    reg        gg_reset_meta;
+    reg        gg_reset_hclk;
+    reg        gg_en_meta;
+    reg        gg_en_hclk;
+    reg [1:0]   gg_code_toggle_sync;
+    reg [127:0] gg_code_payload_meta;
+    reg [127:0] gg_code_payload_hclk;
+    reg         gg_code_pulse_hclk;
+    reg [128:0] gg_code_hclk;
+
+    // Peek CDC: gclk (system_monitor) -> hclk -> GB
+    reg  peek_req_meta;
+    reg  peek_req_sync;
+    reg  peek_req_sync_d;
+    reg  peek_req_pulse;
+    reg  peek_we_hclk;
+    reg [15:0] peek_addr_hclk;
+    reg [7:0]  peek_wdata_hclk;
+    wire       peek_req_hclk   = peek_req_pulse;
+    wire       peek_busy_hclk;
+    wire       peek_data_valid_hclk;
+    wire [7:0] peek_data_hclk;
+    wire [1:0] peek_status_hclk;
+    always @(posedge hclk or negedge reset_n) begin
+        if(~reset_n) begin
+            peek_req_meta        <= 1'b0;
+            peek_req_sync        <= 1'b0;
+            peek_req_sync_d      <= 1'b0;
+            peek_req_pulse       <= 1'b0;
+            peek_we_hclk         <= 1'b0;
+            peek_addr_hclk       <= 16'd0;
+            peek_wdata_hclk      <= 8'd0;
+            gg_reset_meta        <= 1'b0;
+            gg_reset_hclk        <= 1'b0;
+            gg_en_meta           <= 1'b0;
+            gg_en_hclk           <= 1'b0;
+            gg_code_toggle_sync  <= 2'b00;
+            gg_code_payload_meta <= 128'd0;
+            gg_code_payload_hclk <= 128'd0;
+            gg_code_pulse_hclk   <= 1'b0;
+            gg_code_hclk         <= 129'd0;
+        end else begin
+            // two-flop sync for reset/enable
+            gg_reset_meta  <= gg_reset;
+            gg_reset_hclk  <= gg_reset_meta;
+            gg_en_meta     <= gg_en;
+            gg_en_hclk     <= gg_en_meta;
+
+            // peek request sync and one-shot
+            peek_req_meta   <= peek_req;
+            peek_req_sync   <= peek_req_meta;
+            peek_req_sync_d <= peek_req_sync;
+            peek_req_pulse  <= 1'b0;
+            if (peek_req_sync & ~peek_req_sync_d) begin
+                peek_req_pulse  <= 1'b1;
+                peek_we_hclk    <= peek_we;
+                peek_addr_hclk  <= peek_addr;
+                peek_wdata_hclk <= peek_wdata;
+            end
+
+            // shallow sync for payload bus to reduce metastability window
+            gg_code_payload_meta <= gg_code[127:0];
+            gg_code_payload_hclk <= gg_code_payload_meta;
+
+            // toggle-based strobe sync on bit 128
+            gg_code_toggle_sync <= {gg_code_toggle_sync[0], gg_code[128]};
+            if (gg_code_toggle_sync[1] ^ gg_code_toggle_sync[0]) begin
+                // payload already sampled into gg_code_payload_hclk above
+                gg_code_pulse_hclk   <= 1'b1;           // one-cycle pulse for CODES edge detect
+            end else begin
+                gg_code_pulse_hclk   <= 1'b0;
+            end
+            gg_code_hclk <= {gg_code_pulse_hclk, gg_code_payload_hclk};
+        end
+    end
+
+    assign peek_busy       = peek_busy_hclk;
+    assign peek_data_valid = peek_data_valid_hclk;
+    assign peek_data       = peek_data_hclk;
+    assign peek_status     = peek_status_hclk;
+
+    // Peek/poke is not implemented in the current GB core; respond immediately with an
+    // unsupported status so system_monitor can complete the transaction.
+    assign peek_busy_hclk        = 1'b0;
+    assign peek_data_valid_hclk  = peek_req_hclk;
+    assign peek_data_hclk        = 8'h00;
+    assign peek_status_hclk      = 2'b11;
     cart u_cart
     (
        .hclk            (hclk           ),
@@ -270,6 +378,48 @@ module emu_system_top
     wire SAVE_out_rnw  ;                    
     wire SAVE_out_ena  ;                                    
     wire SAVE_out_done ; 
+
+    // Synchronize gbreset into pclk for hash generation
+    reg gbreset_meta_pclk;
+    reg gbreset_sync_pclk;
+    always @(posedge pclk or negedge reset_n) begin
+        if (~reset_n) begin
+            gbreset_meta_pclk <= 1'b1;
+            gbreset_sync_pclk <= 1'b1;
+        end else begin
+            gbreset_meta_pclk <= gbreset;
+            gbreset_sync_pclk <= gbreset_meta_pclk;
+        end
+    end
+
+    localparam [31:0] FNV_OFFSET = 32'h811C9DC5;
+    localparam [31:0] FNV_PRIME  = 32'h01000193;
+
+    reg [15:0] header_seen;
+    wire       header_addr   = (a[15:8] == 8'h01) && (a[7:0] >= 8'h34) && (a[7:0] <= 8'h43);
+    wire [4:0] header_offset = a[7:0] - 8'h34;
+
+    always @(posedge pclk or negedge reset_n) begin
+        if (~reset_n) begin
+            game_hash       <= FNV_OFFSET;
+            header_seen     <= 16'd0;
+            game_hash_valid <= 1'b0;
+        end else begin
+            if (gbreset_sync_pclk) begin
+                game_hash       <= FNV_OFFSET;
+                header_seen     <= 16'd0;
+                game_hash_valid <= 1'b0;
+            end else if (header_addr && rd && ~wr && ~game_hash_valid && ~header_seen[header_offset]) begin
+                // Build a 32-bit FNV-1a hash across the 16 title bytes (0x0134-0x0143).
+                header_seen[header_offset] <= 1'b1;
+                game_hash <= (game_hash ^ CART_DIN_r1) * FNV_PRIME;
+
+                if (&(header_seen | (16'd1 << header_offset))) begin
+                    game_hash_valid <= 1'b1;
+                end
+            end
+        end
+    end
     
     reg ss_load = 1'b0;
     reg gbreset_1 = 1'b0;
@@ -299,8 +449,8 @@ module emu_system_top
         .paletteBGIn(paletteBGIn),
         .paletteOBJ0In(paletteOBJ0In),
         .paletteOBJ1In(paletteOBJ1In),
-
         .paletteOff(paletteOff),
+        .gbc_color_temp(gbc_color_temp),
         .gbc_mode(gbc_mode),
         .gpd(gpd),
 
@@ -361,9 +511,9 @@ module emu_system_top
         .cpu_halt(cpu_halt),
         .DMA_on(DMA_on),
         .hdma_active(hdma_active),
-        .gg_reset(1'd0),
-        .gg_en(1'd0),
-        .gg_code(129'd0),
+        .gg_reset(gg_reset_hclk),
+        .gg_en(gg_en_hclk),
+        .gg_code(gg_code_hclk),
         .gg_available(),
 
         //serial port
