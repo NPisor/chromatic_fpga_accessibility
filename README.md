@@ -1,3 +1,18 @@
+This fork is for Reddit user "TheStilken"'s firmware updates needed to effectively use the associate MCU flash.  There are extensive changes in the FPGA to make the custom MCU firmware work, so this IS required.
+
+MAKE SURE YOU FLASH THE MCU FIRST.  The FPGA flash is a blocker for USB ESP32 flashes unless returned to stock functionality.
+
+NOTE:
+
+When flashing this custom firmware, USB-C functionality for charging will still work as intended, as will connecting with the MRUpdater for stock reflash.
+
+IN ORDER TO ROLL BACK OR UPDATE THE FPGA OR MCU AFTER THIS FPGA FLASH, YOU MUST USE THE MRUPDATER TO RETURN TO STOCK.
+
+It will make ESP-IDF (what I use) to not identify the device on the COM port, so flashing an MCU won't be possible unless restored to stock through the updater first.
+
+
+
+
 # Chromatic FPGA
 This repository houses the ModRetro Chromatic's FPGA design files.
 
